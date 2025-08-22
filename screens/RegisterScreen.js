@@ -8,9 +8,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { registerApi } from '../src/api/auth';
 
 export default function RegisterScreen({ navigation }) {
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [userName, setUserName] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+  const [userPassword, setUserPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
   const [showPass, setShowPass] = useState(false);
@@ -19,12 +19,12 @@ export default function RegisterScreen({ navigation }) {
   const [error, setError] = useState('');
 
   const validate = () => {
-    if (!username.trim()) return 'กรุณากรอกชื่อผู้ใช้';
-    if (!email.trim()) return 'กรุณากรอกอีเมล';
-    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    if (!userName.trim()) return 'กรุณากรอกชื่อผู้ใช้';
+    if (!userEmail.trim()) return 'กรุณากรอกอีเมล';
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userEmail.trim());
     if (!emailOk) return 'อีเมลไม่ถูกต้อง';
-    if (password.length < 6) return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
-    if (password !== confirm) return 'รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน';
+    if (userPassword.length < 6) return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
+    if (userPassword !== confirm) return 'รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน';
     return '';
   };
 
@@ -34,9 +34,12 @@ export default function RegisterScreen({ navigation }) {
     setError('');
     setLoading(true);
     try {
-      await registerApi({ username: username.trim(), email: email.trim(), password });
-      // ไม่ล็อกอินอัตโนมัติ ตามที่ขอ
-      navigation.replace('Login');
+      await registerApi({
+        userName: userName.trim(),
+        userEmail: userEmail.trim().toLowerCase(),
+        userPassword,
+      });
+      navigation.replace('Login'); // เสร็จแล้วกลับหน้า Login
     } catch (e) {
       setError(e?.message || 'สมัครสมาชิกไม่สำเร็จ');
     } finally {
@@ -47,7 +50,7 @@ export default function RegisterScreen({ navigation }) {
   return (
     <SafeAreaView style={[styles.container, Platform.OS !== 'web' && { paddingTop: StatusBar.currentHeight || 20 }]}>
       {/* ปุ่มย้อนกลับ */}
-      <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+      <TouchableOpacity style={styles.backButton} onPress={() => navigation.navigate('Login')}>
         <Ionicons name="arrow-back" size={24} color="#fff" />
       </TouchableOpacity>
 
@@ -58,15 +61,15 @@ export default function RegisterScreen({ navigation }) {
         style={styles.input}
         placeholder="ชื่อผู้ใช้"
         placeholderTextColor="#aaa"
-        value={username}
-        onChangeText={setUsername}
+        value={userName}
+        onChangeText={setUserName}
       />
       <TextInput
         style={styles.input}
         placeholder="อีเมล"
         placeholderTextColor="#aaa"
-        value={email}
-        onChangeText={setEmail}
+        value={userEmail}
+        onChangeText={setUserEmail}
         autoCapitalize="none"
         keyboardType="email-address"
       />
@@ -78,8 +81,8 @@ export default function RegisterScreen({ navigation }) {
           placeholder="รหัสผ่าน"
           placeholderTextColor="#aaa"
           secureTextEntry={!showPass}
-          value={password}
-          onChangeText={setPassword}
+          value={userPassword}
+          onChangeText={setUserPassword}
         />
         <TouchableOpacity style={styles.eye} onPress={() => setShowPass(s => !s)}>
           <Ionicons name={showPass ? 'eye-off' : 'eye'} size={20} color="#555" />

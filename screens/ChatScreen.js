@@ -151,7 +151,7 @@ export default function ChatScreen({ navigation }) {
 
       if (mapped.length === 0) {
         const created = await createChat({
-          userId: user.id || user._id,
+          userId: user.id || user._id,   // << ส่ง userId ไปด้วย
           chatHeader: "แชตใหม่",
         });
         const newChatId = created.chatId || created.id;
@@ -191,10 +191,10 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  // init: ถ้า guest → ข้ามการโหลดแชต
+  // init
   useEffect(() => {
     if (!user) {
-      setChats([]);        // ไม่มีห้อง
+      setChats([]);
       setSelectedChatId(null);
       return;
     }
@@ -213,7 +213,7 @@ export default function ChatScreen({ navigation }) {
     }
     try {
       const created = await createChat({
-        userId: user?.id || user?._id,
+        userId: user?.id || user?._id, // << ส่ง userId ไปด้วย
         chatHeader: "แชตใหม่",
       });
       const newChatId = created.chatId || created.id;
@@ -228,7 +228,6 @@ export default function ChatScreen({ navigation }) {
   };
 
   const deleteChat = async (id) => {
-    // ✅ ยืนยันก่อนลบ
     Alert.alert("ยืนยัน", "ต้องการลบแชตนี้หรือไม่?", [
       { text: "ยกเลิก", style: "cancel" },
       {
@@ -288,6 +287,54 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
+  // === ✅ sendMessage กลับมาแล้ว
+  const sendMessage = async () => {
+    const text = inputText.trim();
+    if (!text) {
+      Alert.alert("แจ้งเตือน", "กรุณาพิมพ์คำถาม");
+      return;
+    }
+    const userMessage = {
+      id: Date.now().toString(),
+      from: "user",
+      text,
+      time: new Date().toLocaleTimeString(),
+    };
+    setMessages((prev) => [...prev, userMessage]);
+    setInputText("");
+    setInputHeight(MIN_H);
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+
+    setSending(true);
+    try {
+      const resp = await askQuestion({
+        chatId: user ? selectedChatId : undefined, // guest = ไม่ส่ง chatId
+        question: text,
+      });
+
+      const isRejected = Boolean(resp?.rejected);
+      const botText = resp?.answer || (isRejected ? "กรุณาพิมพ์คำถาม" : "ขอโทษครับ ผมยังไม่เข้าใจ");
+      const botReply = {
+        id: (Date.now() + 1).toString(),
+        from: "bot",
+        text: botText,
+        time: new Date().toLocaleTimeString(),
+      };
+      setMessages((prev) => [...prev, botReply]);
+    } catch (error) {
+      console.error("askQuestion error:", error);
+      const botReply = {
+        id: (Date.now() + 1).toString(),
+        from: "bot",
+        text: "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์",
+        time: new Date().toLocaleTimeString(),
+      };
+      setMessages((prev) => [...prev, botReply]);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const renderItem = ({ item }) => (
     <View style={[styles.messageWrapper, item.from === "user" ? styles.userWrapper : styles.botWrapper]}>
       <Text style={item.from === "user" ? styles.userMessageText : styles.botMessageText}>{item.text}</Text>
@@ -306,7 +353,7 @@ export default function ChatScreen({ navigation }) {
             {user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}
           </Text>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
-            {/* ❌ เอาปุ่มเพิ่มแชตมุมขวาบนออก เหลือแค่ปิด */}
+            {/* ปุ่มปิด sidebar */}
             <TouchableOpacity onPress={toggleSidebar} style={{ paddingLeft: 8 }}>
               <Icon name="close" size={24} color="#333" />
             </TouchableOpacity>
@@ -381,7 +428,7 @@ export default function ChatScreen({ navigation }) {
 
         {user && (
           <View style={{ marginTop: "auto" }}>
-            {/* ✅ เปลี่ยนเป็นปุ่มเพิ่มแชตใหม่ */}
+            {/* ปุ่มเพิ่มแชตใหม่ */}
             <TouchableOpacity style={styles.sidebarButton} onPress={addNewChat}>
               <Text style={{ color: "#fff" }}>เพิ่มแชตใหม่</Text>
             </TouchableOpacity>
@@ -532,7 +579,6 @@ export default function ChatScreen({ navigation }) {
         <TouchableOpacity style={styles.popupBackdrop} activeOpacity={1} onPress={closeItemMenu} />
         <View style={[styles.popupMenu, getPopupStyle()]}>
           <View style={styles.popupArrow} />
-          {/* แก้ชื่อแบบ inline */}
           <TouchableOpacity
             style={styles.popupItem}
             onPress={() => {
@@ -545,7 +591,6 @@ export default function ChatScreen({ navigation }) {
             <Text>แก้ไขชื่อแชต</Text>
           </TouchableOpacity>
 
-          {/* ลบพร้อมยืนยัน */}
           <TouchableOpacity
             style={styles.popupItem}
             onPress={() => {
@@ -679,7 +724,7 @@ const styles = StyleSheet.create({
   },
   renameInlineInput: {
     flex: 1,
-    minWidth: 0,            // กันล้น
+    minWidth: 0,
     borderWidth: 1,
     borderColor: "#ccc",
     borderRadius: 10,

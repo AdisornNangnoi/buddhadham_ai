@@ -1,3 +1,4 @@
+// ChatScreen.js
 import React, { useRef, useState, useEffect } from "react";
 import {
   Animated,
@@ -16,10 +17,21 @@ import {
   Pressable,
   Keyboard,
   TouchableWithoutFeedback,
+  ActivityIndicator,
+  Alert,
 } from "react-native";
 import Icon from "react-native-vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "../src/auth/AuthContext";
+
+import {
+  getUserChats,
+  createChat,
+  deleteChat as apiDeleteChat,
+  getChatQna,
+  askQuestion,
+  editChat as apiEditChat,
+} from "../src/api/chat";
 
 /** ===== Config ช่องพิมพ์ ===== */
 const MIN_H = 40;
@@ -33,20 +45,19 @@ export default function ChatScreen({ navigation }) {
   const { user, logout } = useAuth();
 
   const [messages, setMessages] = useState([
-    { id: "1", from: "bot", text: "อะฮิอะเฮียะอะฮ่อ", time: new Date().toLocaleTimeString() },
+    { id: "seed1", from: "bot", text: "อะฮิอะเฮียะอะฮ่อ", time: new Date().toLocaleTimeString() },
   ]);
 
-  // ใช้ contentAnim ขยับ “เฉพาะเนื้อหา” ไม่รวม Header
-  const contentAnim = useState(new Animated.Value(0))[0];
+  // ไม่ขยับหน้าจอเวลาเปิด sidebar
   const [inputText, setInputText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarAnim = useState(new Animated.Value(-250))[0];
 
-  // ====== Auto-resize (input) ======
+  // Auto-resize input
   const [inputHeight, setInputHeight] = useState(MIN_H);
   const clampH = (h) => Math.min(MAX_H, Math.max(MIN_H, Math.ceil(h || MIN_H)));
 
-  // ====== WEB: textarea + scrollHeight ======
+  // Web textarea
   const webRef = useRef(null);
   const adjustWebHeight = () => {
     if (Platform.OS !== "web") return;
@@ -62,10 +73,9 @@ export default function ChatScreen({ navigation }) {
     if (Platform.OS === "web") adjustWebHeight();
   }, [inputText]);
 
-  // ====== ดัน input bar เหนือคีย์บอร์ด ======
+  // Keyboard push-up
   const kbBottom = useRef(new Animated.Value(0)).current;
   const [kbBtmNum, setKbBtmNum] = useState(0);
-
   useEffect(() => {
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
@@ -95,61 +105,187 @@ export default function ChatScreen({ navigation }) {
   }, [insets.bottom, kbBottom]);
 
   const listRef = useRef(null);
-
-  // เวลา messages เพิ่ม ให้เลื่อนลงล่าง
   useEffect(() => {
     requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
   }, [messages.length]);
 
-  // ====== Sidebar ======
-  const [chats, setChats] = useState([
-    { id: "c1", title: "ศาสนาพุทธ" },
-    { id: "c2", title: "พระพุทธศาสนา คือ" },
-    { id: "c3", title: "ฉากจบที่วรรณคดีเกี่ยวกับอะไร" },
-  ]);
+  // Sidebar / chats
+  const [chats, setChats] = useState([]);
+  const [selectedChatId, setSelectedChatId] = useState(null);
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [sending, setSending] = useState(false);
+
   const [menuFor, setMenuFor] = useState(null);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
-
-  const addNewChat = () => setChats((prev) => [{ id: Date.now().toString(), title: "แชตใหม่" }, ...prev]);
-  const deleteChat = (id) => setChats((prev) => prev.filter((c) => c.id !== id));
-
-  const toggleSidebar = () => {
-    const toOpen = !sidebarOpen;
-    Animated.parallel([
-      Animated.timing(sidebarAnim, { toValue: toOpen ? 0 : -250, duration: 250, useNativeDriver: false }),
-      Animated.timing(contentAnim, { toValue: toOpen ? 250 : 0, duration: 250, useNativeDriver: false }),
-    ]).start(() => setSidebarOpen(toOpen));
-  };
-
   const openItemMenu = (id, x, y) => { setMenuFor(id); setMenuPos({ x, y }); };
   const closeItemMenu = () => setMenuFor(null);
 
+  // === Inline rename states ===
+  const [editingId, setEditingId] = useState(null);
+  const [editingText, setEditingText] = useState("");
+
   const getPopupStyle = () => {
     const { width, height } = Dimensions.get("window");
-    const MW = 180, MH = 120, PAD = 10;
+    const MW = 200, MH = 160, PAD = 10;
     return { left: Math.min(menuPos.x, width - MW - PAD), top: Math.min(menuPos.y, height - MH - PAD), width: MW };
   };
 
-  const sendMessage = () => {
-    if (!inputText.trim()) return;
-    const userMessage = {
-      id: Date.now().toString(),
-      from: "user",
-      text: inputText.trim(),
-      time: new Date().toLocaleTimeString(),
-    };
-    setMessages((prev) => [...prev, userMessage]);
-    setInputText("");
-    setInputHeight(MIN_H);
-    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
+  const toggleSidebar = () => {
+    const toOpen = !sidebarOpen;
+    Animated.timing(sidebarAnim, { toValue: toOpen ? 0 : -250, duration: 250, useNativeDriver: false })
+      .start(() => setSidebarOpen(toOpen));
+  };
 
-    setTimeout(() => {
-      const botReply = userMessage.text.includes("น้ำตาลสด") ? "ใช่ครับ อร่อยมาก" : "ขอโทษครับ ผมยังไม่เข้าใจ";
-      setMessages((prev) => [
-        ...prev,
-        { id: (Date.now() + 1).toString(), from: "bot", text: botReply, time: new Date().toLocaleTimeString() },
-      ]);
-    }, 800);
+  // โหลดรายชื่อแชตเมื่อมี user (ล็อกอินเท่านั้น)
+  const loadUserChats = async () => {
+    if (!user?.id && !user?._id) return; // guest = ข้าม
+    setLoadingChats(true);
+    try {
+      const list = await getUserChats(user.id || user._id);
+      const mapped = (list || []).map((c) => ({
+        id: c.chatId || c.id,
+        title: c.chatHeader || "แชต",
+      }));
+      setChats(mapped);
+
+      if (mapped.length === 0) {
+        const created = await createChat({
+          userId: user.id || user._id,
+          chatHeader: "แชตใหม่",
+        });
+        const newChatId = created.chatId || created.id;
+        const newChats = [{ id: newChatId, title: created.chatHeader || "แชตใหม่" }];
+        setChats(newChats);
+        setSelectedChatId(newChatId);
+        setMessages([]);
+      } else {
+        setSelectedChatId(mapped[0].id);
+      }
+    } catch (err) {
+      console.error("loadUserChats error:", err);
+      Alert.alert("ผิดพลาด", "ไม่สามารถโหลดรายชื่อแชตได้");
+    } finally {
+      setLoadingChats(false);
+    }
+  };
+
+  const loadHistory = async (chatId) => {
+    if (!chatId) return; // guest = ไม่มี
+    setLoadingHistory(true);
+    try {
+      const rows = await getChatQna(chatId);
+      const msgs = (rows || []).map((r, idx) => ({
+        id: String(r.qNaId || idx),
+        from: r.qNaType === "Q" ? "user" : "bot",
+        text: r.qNaWords,
+        time: new Date(r.createdAt || r.createAt || Date.now()).toLocaleTimeString(),
+      }));
+      setMessages(msgs);
+    } catch (err) {
+      console.error("loadHistory error:", err);
+      Alert.alert("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
+      setMessages([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  // init: ถ้า guest → ข้ามการโหลดแชต
+  useEffect(() => {
+    if (!user) {
+      setChats([]);        // ไม่มีห้อง
+      setSelectedChatId(null);
+      return;
+    }
+    loadUserChats();
+  }, [user]);
+
+  useEffect(() => {
+    if (!selectedChatId) return;
+    loadHistory(selectedChatId);
+  }, [selectedChatId]);
+
+  const addNewChat = async () => {
+    if (!user) {
+      Alert.alert("โหมดไม่บันทึก", "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ");
+      return;
+    }
+    try {
+      const created = await createChat({
+        userId: user?.id || user?._id,
+        chatHeader: "แชตใหม่",
+      });
+      const newChatId = created.chatId || created.id;
+      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+      setChats((prev) => [item, ...prev]);
+      setSelectedChatId(newChatId);
+      setMessages([]);
+    } catch (err) {
+      console.error("createChat error:", err);
+      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+    }
+  };
+
+  const deleteChat = async (id) => {
+    // ✅ ยืนยันก่อนลบ
+    Alert.alert("ยืนยัน", "ต้องการลบแชตนี้หรือไม่?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await apiDeleteChat(id);
+            setChats((prev) => prev.filter((c) => c.id !== id));
+            if (selectedChatId === id) {
+              if (chats.length > 1) {
+                const next = chats.find((c) => c.id !== id);
+                setSelectedChatId(next?.id || null);
+              } else {
+                setSelectedChatId(null);
+                setMessages([]);
+              }
+            }
+          } catch (err) {
+            console.error("deleteChat error:", err);
+            Alert.alert("ผิดพลาด", "ลบแชตไม่สำเร็จ");
+          }
+        },
+      },
+    ]);
+  };
+
+  // === Inline rename ===
+  const startRenameInline = (id) => {
+    const current = chats.find((c) => c.id === id);
+    setEditingId(id);
+    setEditingText(current?.title || "");
+    closeItemMenu();
+  };
+
+  const cancelRenameInline = () => {
+    setEditingId(null);
+    setEditingText("");
+  };
+
+  const confirmRenameInline = async () => {
+    const id = editingId;
+    const title = (editingText || "").trim();
+    if (!id) return;
+    if (!title) {
+      Alert.alert("กรุณาระบุชื่อแชต");
+      return;
+    }
+    try {
+      await apiEditChat(id, { chatHeader: title });
+      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+      setEditingId(null);
+      setEditingText("");
+    } catch (e) {
+      console.error("rename chat error:", e);
+      Alert.alert("ผิดพลาด", "แก้ไขชื่อแชตไม่สำเร็จ");
+    }
   };
 
   const renderItem = ({ item }) => (
@@ -159,59 +295,117 @@ export default function ChatScreen({ navigation }) {
     </View>
   );
 
-  // เผื่อพื้นที่ล่าง: อินพุต + padding + safe-area + ความสูงคีย์บอร์ด
   const listBottomPad = 10 + inputHeight + 12 + (insets.bottom || 0) + kbBtmNum;
 
   return (
     <SafeAreaView style={[styles.container, Platform.OS !== "web" && { paddingTop: StatusBar.currentHeight || 20 }]}>
-      {/* Sidebar (ซ้อนทับ) */}
+      {/* Sidebar */}
       <Animated.View style={[styles.sidebar, { left: sidebarAnim }]}>
         <View style={styles.sidebarHeader}>
-          <Text style={styles.sidebarTitle}>ประวัติการแชท</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <TouchableOpacity onPress={addNewChat}><Icon name="add" size={24} color="#333" /></TouchableOpacity>
-            <TouchableOpacity onPress={toggleSidebar}><Icon name="close" size={24} color="#333" /></TouchableOpacity>
-          </View>
-        </View>
-
-        {chats.map((chat) => (
-          <View key={chat.id} style={styles.sidebarItemRow}>
-            <TouchableOpacity style={{ flex: 1 }} onPress={() => { /* TODO */ closeItemMenu(); }}>
-              <Text numberOfLines={1} style={styles.sidebarItemText}>{chat.title}</Text>
+          <Text style={styles.sidebarTitle}>
+            {user ? `ประวัติการแชท (${chats.length})` : "โหมดไม่บันทึก (Guest)"}
+          </Text>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            {/* ❌ เอาปุ่มเพิ่มแชตมุมขวาบนออก เหลือแค่ปิด */}
+            <TouchableOpacity onPress={toggleSidebar} style={{ paddingLeft: 8 }}>
+              <Icon name="close" size={24} color="#333" />
             </TouchableOpacity>
-            <Pressable
-              onPress={(e) => openItemMenu(chat.id, e?.nativeEvent?.pageX ?? 0, e?.nativeEvent?.pageY ?? 0)}
-              style={styles.dotButton} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Icon name="ellipsis-vertical" size={20} color="#555" />
-            </Pressable>
           </View>
-        ))}
-
-        <View style={{ marginTop: "auto" }}>
-          <TouchableOpacity style={styles.sidebarButton}><Text>ลบประวัติแชท</Text></TouchableOpacity>
         </View>
+
+        {user ? (
+          loadingChats ? (
+            <View style={{ paddingVertical: 10 }}>
+              <ActivityIndicator />
+            </View>
+          ) : (
+            chats.map((chat) => {
+              const isEditing = editingId === chat.id;
+              return (
+                <View key={chat.id} style={styles.sidebarItemRow}>
+                  {isEditing ? (
+                    <View style={styles.renameInlineRow}>
+                      <TextInput
+                        value={editingText}
+                        onChangeText={setEditingText}
+                        placeholder="ชื่อแชต"
+                        style={styles.renameInlineInput}
+                        autoFocus
+                        onSubmitEditing={confirmRenameInline}
+                        returnKeyType="done"
+                      />
+                      <View style={styles.renameInlineBtns}>
+                        <TouchableOpacity onPress={confirmRenameInline} style={styles.inlineIconBtn}>
+                          <Icon name="checkmark" size={18} color="#2ecc71" />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={cancelRenameInline} style={styles.inlineIconBtn}>
+                          <Icon name="close" size={18} color="#e74c3c" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ) : (
+                    <>
+                      <TouchableOpacity
+                        style={{ flex: 1, minWidth: 0 }}
+                        onPress={() => {
+                          setSelectedChatId(chat.id);
+                          closeItemMenu();
+                        }}
+                      >
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.sidebarItemText, selectedChatId === chat.id && { fontWeight: "bold" }]}
+                        >
+                          {chat.title}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <Pressable
+                        onPress={(e) =>
+                          openItemMenu(chat.id, e?.nativeEvent?.pageX ?? 0, e?.nativeEvent?.pageY ?? 0)
+                        }
+                        style={styles.dotButton}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Icon name="ellipsis-vertical" size={20} color="#555" />
+                      </Pressable>
+                    </>
+                  )}
+                </View>
+              );
+            })
+          )
+        ) : (
+          <Text style={{ color: "#555" }}>เข้าสู่ระบบเพื่อสร้างห้องและบันทึกประวัติการสนทนา</Text>
+        )}
+
+        {user && (
+          <View style={{ marginTop: "auto" }}>
+            {/* ✅ เปลี่ยนเป็นปุ่มเพิ่มแชตใหม่ */}
+            <TouchableOpacity style={styles.sidebarButton} onPress={addNewChat}>
+              <Text style={{ color: "#fff" }}>เพิ่มแชตใหม่</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </Animated.View>
 
       {sidebarOpen && <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={toggleSidebar} />}
 
-      {/* Header (fixed center) */}
+      {/* Header */}
       <View style={styles.header}>
-        {/* ซ้าย: เมนู */}
         <View style={styles.headerSideLeft}>
           <TouchableOpacity onPress={toggleSidebar}>
             <Icon name="menu" size={24} color="#fff" />
           </TouchableOpacity>
         </View>
 
-        {/* กลาง: Title ตรึงกึ่งกลางเสมอ */}
         <View pointerEvents="none" style={styles.headerCenter}>
           <Text style={styles.headerTitle}>พุทธธรรม</Text>
         </View>
 
-        {/* ขวา: ปุ่มล็อกอิน หรือ ชื่อผู้ใช้ + ออกระบบ */}
         <View style={styles.headerSideRight}>
           {user ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
               <View style={styles.userBadge}>
                 <Text style={styles.userNameText} numberOfLines={1}>{user.name || "ผู้ใช้"}</Text>
               </View>
@@ -227,25 +421,32 @@ export default function ChatScreen({ navigation }) {
         </View>
       </View>
 
-      {/* Body (ขยับได้) */}
-      <Animated.View style={{ flex: 1, transform: [{ translateX: contentAnim }] }}>
+      {/* Body */}
+      <Animated.View style={{ flex: 1 }}>
         <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <ImageBackground
             source={{ uri: "https://upload.wikimedia.org/wikipedia/commons/3/3c/Dharmachakra_Outline.svg" }}
             style={styles.background}
             imageStyle={{ opacity: 0.1, resizeMode: "contain" }}
           >
-            <FlatList
-              ref={listRef}
-              data={messages}
-              renderItem={renderItem}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={{ padding: 10, paddingBottom: listBottomPad }}
-              keyboardShouldPersistTaps="handled"
-              onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
-            />
+            {user && loadingHistory ? (
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                <ActivityIndicator />
+                <Text style={{ color: "#ddd", marginTop: 8 }}>กำลังโหลดประวัติ...</Text>
+              </View>
+            ) : (
+              <FlatList
+                ref={listRef}
+                data={messages}
+                renderItem={renderItem}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={{ padding: 10, paddingBottom: listBottomPad }}
+                keyboardShouldPersistTaps="handled"
+                onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+              />
+            )}
 
-            {/* ===== Input Row ===== */}
+            {/* Input */}
             <Animated.View
               style={[
                 styles.inputContainerAbs,
@@ -261,9 +462,10 @@ export default function ChatScreen({ navigation }) {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      sendMessage();
+                      if (!sending) sendMessage();
                     }
                   }}
+                  disabled={sending}
                   style={{
                     flex: 1,
                     marginRight: 8,
@@ -279,6 +481,7 @@ export default function ChatScreen({ navigation }) {
                     maxHeight: MAX_H,
                     overflowY: inputHeight >= MAX_H ? "auto" : "hidden",
                     boxSizing: "border-box",
+                    opacity: sending ? 0.6 : 1,
                   }}
                 />
               ) : (
@@ -292,10 +495,12 @@ export default function ChatScreen({ navigation }) {
                       lineHeight: LINE_H,
                       paddingTop: PAD_V_TOP,
                       paddingBottom: PAD_V_BOTTOM,
+                      opacity: sending ? 0.6 : 1,
                     },
                   ]}
                   value={inputText}
                   placeholder="พิมพ์ข้อความ..."
+                  editable={!sending}
                   multiline
                   onChangeText={setInputText}
                   onContentSizeChange={(e) => {
@@ -307,11 +512,15 @@ export default function ChatScreen({ navigation }) {
                   }}
                   scrollEnabled={inputHeight >= MAX_H}
                   returnKeyType="send"
-                  onSubmitEditing={sendMessage}
+                  onSubmitEditing={() => { if (!sending) sendMessage(); }}
                 />
               )}
-              <TouchableOpacity onPress={sendMessage} style={styles.sendButton}>
-                <Icon name="send" size={22} color="#fff" />
+              <TouchableOpacity
+                onPress={() => { if (!sending) sendMessage(); }}
+                disabled={sending || !inputText.trim()}
+                style={[styles.sendButton, (sending || !inputText.trim()) && { opacity: 0.6 }]}
+              >
+                {sending ? <ActivityIndicator color="#fff" /> : <Icon name="send" size={22} color="#fff" />}
               </TouchableOpacity>
             </Animated.View>
           </ImageBackground>
@@ -323,10 +532,33 @@ export default function ChatScreen({ navigation }) {
         <TouchableOpacity style={styles.popupBackdrop} activeOpacity={1} onPress={closeItemMenu} />
         <View style={[styles.popupMenu, getPopupStyle()]}>
           <View style={styles.popupArrow} />
-          <TouchableOpacity style={styles.popupItem} onPress={() => { if (menuFor) deleteChat(menuFor); closeItemMenu(); }}>
+          {/* แก้ชื่อแบบ inline */}
+          <TouchableOpacity
+            style={styles.popupItem}
+            onPress={() => {
+              const id = menuFor;
+              if (!id) return;
+              startRenameInline(id);
+              closeItemMenu();
+            }}
+          >
+            <Text>แก้ไขชื่อแชต</Text>
+          </TouchableOpacity>
+
+          {/* ลบพร้อมยืนยัน */}
+          <TouchableOpacity
+            style={styles.popupItem}
+            onPress={() => {
+              if (menuFor) deleteChat(menuFor);
+              closeItemMenu();
+            }}
+          >
             <Text style={{ color: "#e74c3c" }}>ลบแชตนี้</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.popupItem} onPress={closeItemMenu}><Text>ยกเลิก</Text></TouchableOpacity>
+
+          <TouchableOpacity style={styles.popupItem} onPress={closeItemMenu}>
+            <Text>ยกเลิก</Text>
+          </TouchableOpacity>
         </View>
       </Modal>
     </SafeAreaView>
@@ -336,13 +568,12 @@ export default function ChatScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#2f3640" },
 
-  // Header: ใช้ตำแหน่ง absolute ของลูกๆ เพื่อให้ title ตรึงกลาง
   header: {
     backgroundColor: "#1e272e",
     height: 60,
     paddingHorizontal: 10,
     justifyContent: "center",
-    zIndex: 2, // ให้ลอยเหนือ body ที่ขยับ
+    zIndex: 2,
   },
   headerCenter: {
     position: "absolute",
@@ -411,7 +642,8 @@ const styles = StyleSheet.create({
 
   // Sidebar
   sidebar: {
-    position: "absolute", top: 0, bottom: 0, left: 0, width: 250,
+    position: "absolute",
+    top: 0, bottom: 0, left: 0, width: 250,
     backgroundColor: "#dcdde1", padding: 15, zIndex: 5,
   },
   sidebarTitle: { fontWeight: "bold", fontSize: 16 },
@@ -419,7 +651,9 @@ const styles = StyleSheet.create({
   sidebarItemRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 10, borderBottomWidth: 1, borderColor: "#ccc" },
   sidebarItemText: { paddingRight: 8 },
   dotButton: { paddingHorizontal: 4, paddingVertical: 4 },
-  sidebarButton: { backgroundColor: "#ff6b6b", padding: 10, borderRadius: 8, alignItems: "center", marginTop: 10 },
+
+  // ปุ่มล่าง
+  sidebarButton: { backgroundColor: "#1e272e", padding: 10, borderRadius: 8, alignItems: "center", marginTop: 10 },
 
   backdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.3)", zIndex: 4 },
 
@@ -435,4 +669,28 @@ const styles = StyleSheet.create({
     borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: "#fff",
   },
   popupItem: { paddingVertical: 10, paddingHorizontal: 14 },
+
+  // Inline rename
+  renameInlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    width: "100%",
+  },
+  renameInlineInput: {
+    flex: 1,
+    minWidth: 0,            // กันล้น
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+    fontSize: 14,
+  },
+  renameInlineBtns: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  inlineIconBtn: { paddingHorizontal: 6, paddingVertical: 4 },
 });

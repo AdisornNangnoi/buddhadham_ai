@@ -45,7 +45,7 @@ export default function ChatScreen({ navigation }) {
   const { user, logout } = useAuth();
 
   const [messages, setMessages] = useState([
-    { id: "seed1", from: "bot", text: "อะฮิอะเฮียะอะฮ่อ", time: new Date().toLocaleTimeString() },
+    // { id: "seed1", from: "bot", text: "อะฮิอะเฮียะอะฮ่อ", time: new Date().toLocaleTimeString() },
   ]);
 
   // ไม่ขยับหน้าจอเวลาเปิด sidebar

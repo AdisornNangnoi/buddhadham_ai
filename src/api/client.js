@@ -3,8 +3,7 @@ import axios from "axios";
 
 // .env: EXPO_PUBLIC_API_URL=https://buddhadham-server-service.vercel.app
 const API =
-  process.env.EXPO_PUBLIC_API_URL ||
-  "https://buddhadham-server-service.vercel.app";
+  process.env.EXPO_PUBLIC_API_URL
 
 // แยก client ตามโมดูล
 const client = axios.create({

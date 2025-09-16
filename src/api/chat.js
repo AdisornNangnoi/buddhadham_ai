@@ -56,7 +56,11 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
     ...(d != null ? { d: clamp(Number(d) || 0.75, 0, 1) } : {}),
   };
 
-  if (inflightController) { try { inflightController.abort(); } catch {} }
+  if (inflightController) {
+    try {
+      inflightController.abort();
+    } catch {}
+  }
   inflightController = new AbortController();
 
   const MAX_RETRIES = 2;
@@ -71,6 +75,9 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
         timeout: BASE_TIMEOUT_MS,
       });
       inflightController = null;
+      console.log("data:", data);
+      console.log("taskId:", data.taskId);
+      console.log("question:", data.question);
       return data;
     } catch (err) {
       const isAbort = err?.name === "AbortError" || err?.message === "canceled";
@@ -87,7 +94,9 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
       const status = err?.response?.status;
       const msg = String(err?.response?.data?.message || err?.message || "");
       const looksTemporary =
-        status === 429 || status === 503 || TEMP_ERROR_SNIPPETS.some((s) => msg.includes(s));
+        status === 429 ||
+        status === 503 ||
+        TEMP_ERROR_SNIPPETS.some((s) => msg.includes(s));
       if (looksTemporary && attempt < MAX_RETRIES) {
         const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt);
         attempt += 1;
@@ -97,7 +106,10 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
       return {
         message: "Answered without saving (request failed)",
         data: { savedRecordQuestion: null, savedRecordAnswer: null },
-        answer: status === 429 ? "คำถามเยอะเกินไปชั่วคราว กรุณาลองใหม่อีกครั้ง" : "เกิดข้อผิดพลาดขณะส่งคำถาม กรุณาลองใหม่",
+        answer:
+          status === 429
+            ? "คำถามเยอะเกินไปชั่วคราว กรุณาลองใหม่อีกครั้ง"
+            : "เกิดข้อผิดพลาดขณะส่งคำถาม กรุณาลองใหม่",
         references: "ไม่มี",
         rejected: true,
         duration: 0,
@@ -112,13 +124,21 @@ export const askQuestion = async ({ chatId, question, k, d }) => {
 export const getUserChats = async (userId) => {
   if (!userId) return [];
   const { data } = await chatClient.get(`/all/${userId}`);
-  return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+  return Array.isArray(data?.data)
+    ? data.data
+    : Array.isArray(data)
+    ? data
+    : [];
 };
 
-// POST /chat  (ต้องส่ง userId ด้วยถ้ามีระบบแยกเจ้าของห้อง)
+// POST /chat
 export const createChat = async ({ chatHeader, userId }) => {
-  if (!chatHeader || !String(chatHeader).trim()) throw new Error("chatHeader is required");
-  const body = { chatHeader: String(chatHeader).trim(), ...(userId != null ? { userId } : {}) };
+  if (!chatHeader || !String(chatHeader).trim())
+    throw new Error("chatHeader is required");
+  const body = {
+    chatHeader: String(chatHeader).trim(),
+    ...(userId != null ? { userId } : {}),
+  };
   const { data } = await chatClient.post(`/`, body);
   return data?.data ?? data;
 };
@@ -147,7 +167,11 @@ export const getChatById = async (chatId) => {
 // GET /chat/all
 export const getAllChats = async () => {
   const { data } = await chatClient.get(`/all`);
-  return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+  return Array.isArray(data?.data)
+    ? data.data
+    : Array.isArray(data)
+    ? data
+    : [];
 };
 
 /* ======================= QnA history per chat ======================= */
@@ -156,9 +180,27 @@ export const getChatQna = async (chatId) => {
   if (!chatId) return [];
   try {
     const { data } = await qNaClient.get(`/${chatId}`);
-    return Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    return Array.isArray(data?.data)
+      ? data.data
+      : Array.isArray(data)
+      ? data
+      : [];
   } catch (err) {
     if (err?.response?.status === 404) return [];
     throw err;
   }
+};
+
+// POST /cancel/:taskId
+export const cancelAsk = async (taskId) => {
+  if (!taskId) throw new Error("taskId is required");
+  const { data } = await qNaClient.post(`/cancel/${taskId}`);
+  return data?.data ?? data;
+};
+
+// DELETE /qNa/:qNaId   << เพิ่มเพื่อให้ FE ลบคำถามที่เพิ่งส่งได้
+export const deleteQna = async (qNaId) => {
+  if (!qNaId) throw new Error("qNaId is required");
+  const { data } = await qNaClient.delete(`/${qNaId}`);
+  return data?.data ?? data;
 };

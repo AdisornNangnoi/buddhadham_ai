@@ -191,16 +191,47 @@ export const getChatQna = async (chatId) => {
   }
 };
 
-// POST /cancel/:taskId
-export const cancelAsk = async (taskId) => {
+// POST /cancel/:taskId  (อัปเดตให้ส่ง body ได้)
+export const cancelAsk = async (taskId, payload = {}) => {
   if (!taskId) throw new Error("taskId is required");
-  const { data } = await qNaClient.post(`/cancel/${taskId}`);
+  const { data } = await qNaClient.post(`/cancel/${taskId}`, payload);
   return data?.data ?? data;
 };
 
-// DELETE /qNa/:qNaId   << เพิ่มเพื่อให้ FE ลบคำถามที่เพิ่งส่งได้
+// ลบ QnA ตาม qNaId (รองรับหลายเส้นทาง + idempotent not found)
 export const deleteQna = async (qNaId) => {
-  if (!qNaId) throw new Error("qNaId is required");
-  const { data } = await qNaClient.delete(`/${qNaId}`);
-  return data?.data ?? data;
+  const idNum = Number(qNaId);
+  if (!idNum) return { ok: false, message: "Invalid qNaId" };
+
+  // เส้นทางมาตรฐาน: DELETE /qNa/:id
+  try {
+    const { data } = await qNaClient.delete(`/${idNum}`);
+    return data?.data ?? data; // คาดหวัง { ok:true, deleted:true }
+  } catch (e1) {
+    const status1 = e1?.response?.status;
+
+    // ถ้า 404/405 → ลองเส้นทางสำรอง
+    if (status1 === 404 || status1 === 405) {
+      // สำรองแบบ DELETE /qNa/deleteqNa/:id
+      try {
+        const { data } = await qNaClient.delete(`/deleteqNa/${idNum}`);
+        return data?.data ?? data;
+      } catch (e2) {
+        // สำรองแบบ POST /qNa/deleteqNa/:id
+        try {
+          const { data } = await qNaClient.post(`/deleteqNa/${idNum}`);
+          return data?.data ?? data;
+        } catch (e3) {
+          const status3 = e3?.response?.status;
+          // ถ้าไม่พบถือว่าสำเร็จแบบ idempotent
+          if (status3 === 404) return { ok: true, deleted: false };
+          throw e3;
+        }
+      }
+    }
+
+    // ถ้าเส้นทางหลักตอบ 404 ก็ถือว่าสำเร็จแบบ idempotent
+    if (status1 === 404) return { ok: true, deleted: false };
+    throw e1;
+  }
 };

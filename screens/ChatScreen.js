@@ -33,8 +33,8 @@ import {
   getChatQna,
   askQuestion,
   editChat as apiEditChat,
-  cancelAsk, // << เพิ่มใช้ยกเลิกที่เซิร์ฟเวอร์
-  deleteQna, // << เพิ่มใช้ลบคำถามล่าสุดตอนยกเลิก
+  cancelAsk, // ใช้ยกเลิกที่เซิร์ฟเวอร์
+  deleteQna, // ลบคำถามล่าสุดตอนยกเลิก
 } from "../src/api/chat";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -47,7 +47,8 @@ const PAD_V_TOP = 10;
 const PAD_V_BOTTOM = 10;
 const EXTRA_BOTTOM_GAP = 24;
 
-const SOCKET_URL = process.env.EXPO_PUBLIC_API_URL || "http://tarasato.thddns.net:3000";
+const SOCKET_URL =
+  process.env.EXPO_PUBLIC_API_URL || "http://tarasato.thddns.net:3000";
 const STORAGE_PREFIX = "chat_state_v1:";
 
 /** storage helper: AsyncStorage (mobile) + localStorage (web) */
@@ -105,7 +106,7 @@ export default function ChatScreen({ navigation }) {
     awaitingRef.current = sending;
   }, [sending]);
 
-  /** ตัวระบุงาน และ qNaId/qMsgId สำหรับยกเลิก */
+  /** ตัวระบุงาน/ห้อง สำหรับกรองคำตอบ */
   const [currentTaskId, setCurrentTaskId] = useState(null);
   const currentTaskIdRef = useRef(null);
   useEffect(() => {
@@ -115,77 +116,11 @@ export default function ChatScreen({ navigation }) {
   const [pendingQnaId, setPendingQnaId] = useState(null);
   const [pendingUserMsgId, setPendingUserMsgId] = useState(null);
 
-  /** สร้าง socket + handlers */
-  useEffect(() => {
-    const socket = io(SOCKET_URL);
-    setSocket(socket);
-    socket.on("connect", () => {
-      console.log("✅ Socket connected! ID:", socket.id);
-    });
-
-    socket.on("connect_error", (err) => {
-      console.error("❌ Socket connect error:", err.message);
-    });
-
-    socket.on("message", (msgObj) => {
-      // กรอง task ให้ตรงงานที่รอ
-      if (
-        msgObj?.taskId &&
-        currentTaskIdRef.current &&
-        msgObj.taskId !== currentTaskIdRef.current
-      ) {
-        return;
-      }
-      if (!awaitingRef.current) return;
-
-      const finalText =
-        typeof msgObj === "string"
-          ? msgObj
-          : msgObj?.text ?? JSON.stringify(msgObj);
-
-      // ถ้ามี bubble pending ของ task นี้อยู่ → แทนที่ด้วยคำตอบจริง
-      const tId = msgObj?.taskId || currentTaskIdRef.current;
-      setMessages((prev) => {
-        const pendId = pendingBubbleId(tId);
-        const idx = prev.findIndex((m) => m.id === pendId);
-        const newMsg = {
-          id: Date.now().toString(),
-          from: "bot",
-          text: finalText,
-          time: new Date().toLocaleTimeString(),
-        };
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy.splice(idx, 1, newMsg);
-          return copy;
-        }
-        return [...prev, newMsg];
-      });
-
-      // ปิดสถานะรอ + ล้าง state pending
-      hardResetPendingState();
-    });
-
-    socket.on?.("done", (payload) => {
-      if (
-        payload?.taskId &&
-        currentTaskIdRef.current &&
-        payload.taskId !== currentTaskIdRef.current
-      )
-        return;
-      if (!awaitingRef.current) return;
-      hardResetPendingState();
-    });
-
-    return () => socket.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  /** auth + insets */
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
 
   const [messages, setMessages] = useState([]);
-
   const [inputText, setInputText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarAnim = useState(new Animated.Value(-250))[0];
@@ -243,29 +178,7 @@ export default function ChatScreen({ navigation }) {
       s2.remove();
     };
   }, [insets.bottom, kbBottom]);
-  const addNewChat = async () => {
-    if (!user) {
-      Alert.alert(
-        "โหมดไม่บันทึก",
-        "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ"
-      );
-      return;
-    }
-    try {
-      const created = await createChat({
-        userId: user?.id || user?._id,
-        chatHeader: "แชตใหม่",
-      });
-      const newChatId = created.chatId || created.id;
-      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
-      setChats((prev) => [item, ...prev]);
-      setSelectedChatId(newChatId);
-      setMessages([]);
-    } catch (err) {
-      console.error("createChat error:", err);
-      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
-    }
-  };
+
   /* auto scroll */
   const listRef = useRef(null);
   useEffect(() => {
@@ -279,6 +192,12 @@ export default function ChatScreen({ navigation }) {
   const [selectedChatId, setSelectedChatId] = useState(null);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  /** เก็บ selectedChatId ใน ref เพื่อใช้ใน socket handler */
+  const selectedChatIdRef = useRef(null);
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
 
   /** popup menu */
   const [menuFor, setMenuFor] = useState(null);
@@ -313,6 +232,123 @@ export default function ChatScreen({ navigation }) {
       useNativeDriver: false,
     }).start(() => setSidebarOpen(toOpen));
   };
+
+  // === ป้องกัน persist ชนตอน hydrate ===
+  const persistSuspendedRef = useRef(false);
+
+  // === pending bubble helpers ===
+  const pendingBubbleId = (taskId) => `pending-${taskId}`;
+  const makePendingBubble = (taskId) => ({
+    id: taskId ? pendingBubbleId(taskId) : "pending-generic",
+    from: "bot",
+    pending: true,
+    text: "กำลังค้นหาคำตอบ...",
+    time: new Date().toLocaleTimeString(),
+  });
+  const addPendingBotBubble = (taskId) => {
+    const id = taskId ? pendingBubbleId(taskId) : "pending-generic";
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === id)) return prev;
+      return [...prev, makePendingBubble(taskId)];
+    });
+  };
+  const removePendingBotBubble = (taskId) => {
+    setMessages((prev) => {
+      if (taskId) {
+        const id = pendingBubbleId(taskId);
+        return prev.filter((m) => m.id !== id);
+      }
+      const idx = prev.findIndex((m) => m.pending === true);
+      if (idx < 0) return prev;
+      const copy = [...prev];
+      copy.splice(idx, 1);
+      return copy;
+    });
+  };
+  // === อัปเกรด pending bubble จาก generic -> ผูก taskId ===
+  const upgradePendingBubble = (taskId) => {
+    if (!taskId) return;
+    setMessages((prev) => {
+      const genIdx = prev.findIndex(
+        (m) => m.pending === true && m.id === "pending-generic"
+      );
+      if (genIdx === -1) return prev;
+      const upgraded = { ...prev[genIdx], id: `pending-${taskId}` };
+      const copy = [...prev];
+      copy.splice(genIdx, 1, upgraded);
+      return copy;
+    });
+  };
+
+  /** สร้าง socket + handlers */
+  useEffect(() => {
+    const socket = io(SOCKET_URL);
+    setSocket(socket);
+    socket.on("connect", () => {
+      console.log("✅ Socket connected! ID:", socket.id);
+    });
+
+    socket.on("connect_error", (err) => {
+      console.error("❌ Socket connect error:", err.message);
+    });
+
+    socket.on("message", (msgObj) => {
+      // ✅ รับเฉพาะคำตอบที่เป็น “งานนี้” หรือ “ห้องนี้” (+ fallback ถ้ายัง pending)
+      const matchesTask =
+        !!msgObj?.taskId && msgObj.taskId === currentTaskIdRef.current;
+      const matchesChat =
+        !!msgObj?.chatId && msgObj.chatId === selectedChatIdRef.current;
+
+      let accept = matchesTask || matchesChat;
+      if (!accept && awaitingRef.current) accept = true; // fallback ระหว่างรอ
+      if (!accept) return;
+
+      const finalText =
+        typeof msgObj === "string"
+          ? msgObj
+          : msgObj?.text ?? JSON.stringify(msgObj);
+
+      // ถ้าตอน hydrate เรามีบับเบิ้ล generic แล้วข้อความนี้มี taskId => อัปเกรด
+      if (msgObj?.taskId && msgObj.taskId !== currentTaskIdRef.current) {
+        setCurrentTaskId(msgObj.taskId);
+        upgradePendingBubble(msgObj.taskId);
+      }
+
+      const tId = msgObj?.taskId || currentTaskIdRef.current;
+      setMessages((prev) => {
+        const pendId = tId ? pendingBubbleId(tId) : "pending-generic";
+        let idx = prev.findIndex((m) => m.id === pendId);
+        if (idx < 0) idx = prev.findIndex((m) => m.pending === true);
+
+        const newMsg = {
+          id: Date.now().toString(),
+          from: "bot",
+          text: finalText,
+          time: new Date().toLocaleTimeString(),
+        };
+        if (idx >= 0) {
+          const copy = [...prev];
+          copy.splice(idx, 1, newMsg);
+          return copy;
+        }
+        return [...prev, newMsg];
+      });
+
+      hardResetPendingState();
+    });
+
+    socket.on?.("done", (payload) => {
+      const matchesTask =
+        !!payload?.taskId && payload.taskId === currentTaskIdRef.current;
+      const matchesChat =
+        !!payload?.chatId && payload.chatId === selectedChatIdRef.current;
+      if (!matchesTask && !matchesChat) return;
+      hardResetPendingState();
+    });
+
+    return () => socket.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** โหลดรายการแชต */
   const loadUserChats = async () => {
@@ -349,13 +385,25 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** โหลดประวัติ + restore state ที่ cache ไว้ */
+  /** โหลดประวัติ + restore state ที่ cache ไว้ (แทรก pending ก่อน setMessages) */
   const loadHistory = async (chatId) => {
     if (!chatId) return;
     setLoadingHistory(true);
+
+    // ❗ กัน persist effect เขียนทับระหว่าง hydrate
+    persistSuspendedRef.current = true;
+
+    // เคลียร์สถานะ local (อย่าเพิ่ง persist)
+    setSending(false);
+    setShowStop(false);
+    setCurrentTaskId(null);
+    setPendingQnaId(null);
+    setPendingUserMsgId(null);
+    if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+
     try {
       const rows = await getChatQna(chatId);
-      const msgs = (rows || []).map((r, idx) => ({
+      const historyMsgs = (rows || []).map((r, idx) => ({
         id: String(r.qNaId || idx),
         from: r.qNaType === "Q" ? "user" : "bot",
         text: r.qNaWords,
@@ -363,36 +411,47 @@ export default function ChatScreen({ navigation }) {
           r.createdAt || r.createAt || Date.now()
         ).toLocaleTimeString(),
       }));
-      setMessages(msgs);
 
-      // ===== Restore persisted state สำหรับห้องนี้ =====
+      let nextMsgs = [...historyMsgs];
+
+      // ===== ดึง state จาก storage แล้ว "ประกอบ" รายการข้อความให้มี pending ตั้งแต่แรก
       const raw = await storage.getItem(STORAGE_PREFIX + chatId);
       if (raw) {
         const saved = JSON.parse(raw);
-        // ถ้าตอนออกไปยัง "กำลังรอคำตอบ" → โชว์ต่อ
-        if (saved?.sending && saved?.currentTaskId) {
+
+        // ⛔️ ไม่แทรก saved.pendingUserMsg กลับมาเด็ดขาด
+        // เพราะคำถามถูกบันทึกลง DB แล้ว และจะอยู่ใน historyMsgs อยู่แล้ว
+
+        // ถ้าเป็นสถานะกำลังรอ → ใส่บับเบิ้ล pending เลย (generic หรือผูก taskId)
+        if (saved?.sending) {
+          const pendId = saved.currentTaskId
+            ? pendingBubbleId(saved.currentTaskId)
+            : "pending-generic";
+          const existPend = nextMsgs.some((m) => m.id === pendId);
+          if (!existPend) nextMsgs.push(makePendingBubble(saved.currentTaskId));
+
+          // คืนค่า state
           setSending(true);
-          setCurrentTaskId(saved.currentTaskId);
+          setCurrentTaskId(saved.currentTaskId ?? null);
           setPendingQnaId(saved.pendingQnaId ?? null);
           setPendingUserMsgId(saved.pendingUserMsgId ?? null);
 
-          // แทรกข้อความผู้ใช้ค้าง (ถ้ายังไม่มี)
-          if (saved.pendingUserMsg) {
-            setMessages((prev) => {
-              const exist = prev.some((m) => m.id === saved.pendingUserMsg.id);
-              return exist ? prev : [...prev, saved.pendingUserMsg];
-            });
-          }
-          // ใส่บับเบิล pending ของบอต (ถ้ายังไม่มี)
-          addPendingBotBubble(saved.currentTaskId);
+          // ตั้งดีเลย์โชว์ปุ่ม stop เหมือนเดิม
+          setShowStop(false);
+          if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+          stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
         }
       }
+
+      setMessages(nextMsgs);
     } catch (err) {
       console.error("loadHistory error:", err);
       Alert.alert("ผิดพลาด", "ไม่สามารถโหลดประวัติแชตได้");
       setMessages([]);
     } finally {
       setLoadingHistory(false);
+      // ✅ เปิดให้ persist effect ทำงานต่อ หลัง hydrate เสร็จ
+      persistSuspendedRef.current = false;
     }
   };
 
@@ -417,17 +476,20 @@ export default function ChatScreen({ navigation }) {
   useEffect(() => {
     (async () => {
       if (!selectedChatId) return;
+      if (persistSuspendedRef.current) return; // ❗ กันเขียนทับตอน hydrate
+
       const data = {
         sending,
         currentTaskId,
         pendingQnaId,
         pendingUserMsgId,
-        // เก็บสำรองตัวข้อความผู้ใช้ที่ค้างอยู่ (ถ้ามี)
+        // เก็บ pendingUserMsg ไว้ใช้ตอน cancel ใน session นี้ แต่จะ "ไม่" render ตอน hydrate
         pendingUserMsg:
           pendingUserMsgId &&
           messages.find((m) => m.id === pendingUserMsgId && m.from === "user"),
         savedAt: Date.now(),
       };
+
       await storage.setItem(
         STORAGE_PREFIX + selectedChatId,
         JSON.stringify(data)
@@ -442,7 +504,7 @@ export default function ChatScreen({ navigation }) {
     messages,
   ]);
 
-  /** ปิดแท็บ/รีเฟรช (web) — จะมีการเซฟอยู่แล้วใน useEffect ด้านบน */
+  /** ปิดแท็บ/รีเฟรช (web) — useEffect ด้านบนจะเซฟ state ให้อยู่แล้ว */
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const onBeforeUnload = () => {};
@@ -518,29 +580,28 @@ export default function ChatScreen({ navigation }) {
       Alert.alert("ผิดพลาด", "แก้ไขชื่อแชตไม่สำเร็จ");
     }
   };
-
-  /** ===== Utilities สำหรับ pending bubble ===== */
-  const pendingBubbleId = (taskId) => `pending-${taskId}`;
-  const addPendingBotBubble = (taskId) => {
-    if (!taskId) return;
-    const id = pendingBubbleId(taskId);
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === id)) return prev;
-      return [
-        ...prev,
-        {
-          id,
-          from: "bot",
-          pending: true,
-          text: "กำลังค้นหาคำตอบ...",
-          time: new Date().toLocaleTimeString(),
-        },
-      ];
-    });
-  };
-  const removePendingBotBubble = (taskId) => {
-    const id = pendingBubbleId(taskId);
-    setMessages((prev) => prev.filter((m) => m.id !== id));
+  const addNewChat = async () => {
+    if (!user) {
+      Alert.alert(
+        "โหมดไม่บันทึก",
+        "กรุณาเข้าสู่ระบบเพื่อสร้างห้องแชตและบันทึกประวัติ"
+      );
+      return;
+    }
+    try {
+      const created = await createChat({
+        userId: user?.id || user?._id,
+        chatHeader: "แชตใหม่",
+      });
+      const newChatId = created.chatId || created.id;
+      const item = { id: newChatId, title: created.chatHeader || "แชตใหม่" };
+      setChats((prev) => [item, ...prev]);
+      setSelectedChatId(newChatId);
+      setMessages([]);
+    } catch (err) {
+      console.error("createChat error:", err);
+      Alert.alert("ผิดพลาด", "ไม่สามารถสร้างแชตใหม่ได้");
+    }
   };
 
   /** ยิงคำถาม */
@@ -570,6 +631,24 @@ export default function ChatScreen({ navigation }) {
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     stopTimerRef.current = setTimeout(() => setShowStop(true), 450);
 
+    // ⭐ แสดง pending bubble แบบ generic ทันที (ยังไม่รู้ taskId)
+    addPendingBotBubble(null);
+
+    // เซฟสถานะทันที กันรีเฟรชไวๆ
+    if (selectedChatId) {
+      storage.setItem(
+        STORAGE_PREFIX + selectedChatId,
+        JSON.stringify({
+          sending: true,
+          currentTaskId: null,
+          pendingQnaId: null,
+          pendingUserMsgId: userMessage.id,
+          pendingUserMsg: userMessage,
+          savedAt: Date.now(),
+        })
+      );
+    }
+
     try {
       const resp = await askQuestion({
         chatId: user ? selectedChatId : undefined,
@@ -585,14 +664,31 @@ export default function ChatScreen({ navigation }) {
       setCurrentTaskId(taskId);
 
       const qId =
-        resp?.data?.savedRecordQuestion?.qNaId ||
-        resp?.savedRecordQuestion?.qNaId ||
-        resp?.questionRecord?.qNaId ||
+        resp?.qNaId ??
+        resp?.data?.qNaId ??
+        resp?.data?.savedRecordQuestion?.qNaId ??
+        resp?.savedRecordQuestion?.qNaId ??
+        resp?.questionRecord?.qNaId ??
         null;
       setPendingQnaId(qId);
 
-      // แสดง bubble ฝั่งบอตแบบกำลังโหลด
-      if (taskId) addPendingBotBubble(taskId);
+      // ⭐ อัปเกรดจาก generic -> ผูก taskId (ไม่สร้างซ้ำ)
+      if (taskId) upgradePendingBubble(taskId);
+
+      // อัปเดต cache หลังรู้ task/qna
+      if (selectedChatId) {
+        storage.setItem(
+          STORAGE_PREFIX + selectedChatId,
+          JSON.stringify({
+            sending: true,
+            currentTaskId: taskId,
+            pendingQnaId: qId,
+            pendingUserMsgId: userMessage.id,
+            pendingUserMsg: userMessage,
+            savedAt: Date.now(),
+          })
+        );
+      }
     } catch (error) {
       console.error("askQuestion error:", error);
       const botReply = {
@@ -606,29 +702,49 @@ export default function ChatScreen({ navigation }) {
     }
   };
 
-  /** ยกเลิก: ยิง cancel + ลบ Q + ลบข้อความผู้ใช้ + ลบ bubble pending */
+  /** ยกเลิก: ยิง cancel + ลบ Q ใน DB + ลบข้อความผู้ใช้ + ลบบับเบิ้ล pending */
   const cancelSending = async () => {
     try {
+      // 1) สั่งยกเลิก task
       if (currentTaskId) {
-        await cancelAsk(currentTaskId);
+        try {
+          await cancelAsk(currentTaskId, {
+            qNaId: pendingQnaId || null,
+            chatId: selectedChatIdRef.current || null,
+          });
+        } catch (e) {
+          console.warn("cancelAsk error:", e?.message || e);
+        }
       }
+
+      // 2) fallback: ลบ Q ใน DB เอง ถ้ายังมี qNaId อยู่
       if (pendingQnaId) {
         try {
           await deleteQna(pendingQnaId);
         } catch (e) {
-          console.warn("deleteQna error:", e?.message || e);
+          console.warn("deleteQna fallback error:", e?.message || e);
         }
       }
+
+      // 3) ลบข้อความผู้ใช้ล่าสุดออกจากจอ
       if (pendingUserMsgId) {
         setMessages((prev) => prev.filter((m) => m.id !== pendingUserMsgId));
       }
-      if (currentTaskId) removePendingBotBubble(currentTaskId);
+
+      // 4) ลบ bubble pending ของบอท
+      if (currentTaskId) {
+        removePendingBotBubble(currentTaskId);
+      } else {
+        // ถ้าไม่มี taskId (ยังเป็น generic) ให้ลบ generic ออก
+        removePendingBotBubble(null);
+      }
     } finally {
+      // 5) reset state + เคลียร์ cache ห้อง
       hardResetPendingState();
     }
   };
 
-  /** ล้างสถานะ pending ทั้งหมด */
+  /** ล้างสถานะ pending ทั้งหมด + เคลียร์ cache ห้องปัจจุบัน */
   const hardResetPendingState = () => {
     setSending(false);
     setShowStop(false);
@@ -636,6 +752,14 @@ export default function ChatScreen({ navigation }) {
     setPendingQnaId(null);
     setPendingUserMsgId(null);
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+
+    const chatId = selectedChatIdRef.current;
+    if (chatId) {
+      storage.setItem(
+        STORAGE_PREFIX + chatId,
+        JSON.stringify({ sending: false, savedAt: Date.now() })
+      );
+    }
   };
 
   /** render message item (รองรับ pending bubble) */
@@ -674,8 +798,16 @@ export default function ChatScreen({ navigation }) {
                   : { color: "#ffffffff", backgroundColor: "#333" },
               blockquote:
                 item.from === "user"
-                  ? { color: "white", backgroundColor: "#333", fontStyle: "italic" }
-                  : { color: "#ffffffff", backgroundColor: "#333", fontStyle: "italic" },
+                  ? {
+                      color: "white",
+                      backgroundColor: "#333",
+                      fontStyle: "italic",
+                    }
+                  : {
+                      color: "#ffffffff",
+                      backgroundColor: "#333",
+                      fontStyle: "italic",
+                    },
             }}
           >
             {item.text}
@@ -963,7 +1095,7 @@ export default function ChatScreen({ navigation }) {
                   }}
                   onKeyPress={(e) => {
                     if (e.nativeEvent.key === "Enter") {
-                      setInputText((prev) => prev.replace(/\n$/, ""));
+                      setInputText((prev) => prev.replace("\n", ""));
                       if (!sending && inputText.trim()) sendMessage();
                     }
                   }}
@@ -1031,7 +1163,7 @@ export default function ChatScreen({ navigation }) {
           onPress={closeItemMenu}
         />
         <View style={[styles.popupMenu, getPopupStyle()]}>
-          <View style={styles.popupArrow} />
+          <View className="popupArrow" style={styles.popupArrow} />
           <TouchableOpacity
             style={styles.popupItem}
             onPress={() => {

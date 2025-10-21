@@ -1,40 +1,79 @@
+import React, {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  useEffect,
+} from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
-import client from "./client";
+/**
+ * AuthContext — ใช้สำหรับจัดการสถานะผู้ใช้ (Login / Logout)
+ * และเก็บ token ลง storage เพื่อให้ยังล็อกอินอยู่ได้แม้ปิดแอป
+ */
+const AuthContext = createContext(null);
 
-export const registerApi = async ({ userName, userEmail, userPassword }) => {
-  const res = await client.post("/", { userName, userEmail, userPassword });
-  return res.data;
-};
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);           // เก็บข้อมูลผู้ใช้ปัจจุบัน
+  const [isRestoring, setIsRestoring] = useState(true); // สถานะกำลังโหลดข้อมูลผู้ใช้จาก storage
 
+  /**
+   * โหลดข้อมูลผู้ใช้จาก AsyncStorage ตอนเปิดแอป
+   * เพื่อรักษาสถานะล็อกอิน
+   */
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem("auth:user");
+        if (raw) setUser(JSON.parse(raw));
+      } catch (e) {
+        console.warn("Load auth from storage failed:", e);
+      } finally {
+        setIsRestoring(false);
+      }
+    })();
+  }, []);
 
-export const loginApi = async ({ userInput, userPassword }) => {
-  const res = await client.post("/login", { userInput, userPassword });
-  const raw = res.data; 
-
-  
-  const u =
-    raw?.user ??
-    raw?.data?.user ??
-    raw?.data ??
-    raw?.payload ??
-    raw?.result ??
-    null;
-
- 
-  const token =
-    u?.token ?? raw?.token ?? raw?.accessToken ?? raw?.data?.token ?? null;
-
-  return {
-    message: raw?.message || "ok",
-    user: {
-      id:
-        u?.userId ??
-        u?.id ??
-        u?._id ??
-        (typeof u?.uid === "string" ? u.uid : null),
-      name: u?.userName ?? u?.name ?? u?.fullName ?? "",
-      email: u?.userEmail ?? u?.email ?? u?.userInput ?? userInput,
-      token,
-    },
+  /**
+   * login(userObj)
+   * บันทึกข้อมูลผู้ใช้ใหม่ → setUser → เก็บลง AsyncStorage
+   */
+  const login = async (userObj) => {
+    setUser(userObj);
+    await AsyncStorage.setItem("auth:user", JSON.stringify(userObj));
   };
-};
+
+  /**
+   * logout()
+   * ลบข้อมูลผู้ใช้ออกจาก state และ AsyncStorage
+   */
+  const logout = async () => {
+    setUser(null);
+    await AsyncStorage.removeItem("auth:user");
+  };
+
+  /**
+   * value ที่แชร์ให้ component อื่นใช้งานผ่าน useAuth()
+   */
+  const value = useMemo(
+    () => ({
+      user,
+      isRestoring,
+      login,
+      logout,
+    }),
+    [user, isRestoring]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+/**
+ * useAuth()
+ * Custom hook สำหรับเรียกใช้งาน context ของ Auth
+ */
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+}
